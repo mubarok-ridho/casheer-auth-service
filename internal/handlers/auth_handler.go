@@ -1,13 +1,14 @@
 package handlers
 
 import (
-	"casheer-auth-service/internal/models"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/golang-jwt/jwt/v4"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
+
+	"github.com/mubarok-ridho/casheer-auth-service/internal/models"
 )
 
 type AuthHandler struct {
@@ -26,30 +27,55 @@ func (h *AuthHandler) Login(c *fiber.Ctx) error {
 	}
 
 	if err := c.BodyParser(&input); err != nil {
-		return c.Status(400).JSON(fiber.Map{"error": "Invalid input"})
+		return c.Status(400).JSON(fiber.Map{
+			"error": "Invalid input format",
+		})
+	}
+
+	// Validasi input
+	if input.Email == "" || input.Password == "" {
+		return c.Status(400).JSON(fiber.Map{
+			"error": "Email and password are required",
+		})
 	}
 
 	var user models.User
-	if err := h.DB.Preload("Tenant").Where("email = ?", input.Email).First(&user).Error; err != nil {
-		return c.Status(401).JSON(fiber.Map{"error": "Invalid credentials"})
+	err := h.DB.Preload("Tenant").Where("email = ?", input.Email).First(&user).Error
+	if err != nil {
+		return c.Status(401).JSON(fiber.Map{
+			"error": "Invalid email or password",
+		})
 	}
 
 	// Check password
-	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(input.Password)); err != nil {
-		return c.Status(401).JSON(fiber.Map{"error": "Invalid credentials"})
+	err = bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(input.Password))
+	if err != nil {
+		return c.Status(401).JSON(fiber.Map{
+			"error": "Invalid email or password",
+		})
+	}
+
+	// Check if user is active
+	if !user.IsActive {
+		return c.Status(401).JSON(fiber.Map{
+			"error": "Account is deactivated",
+		})
 	}
 
 	// Generate JWT
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"user_id":   user.ID,
 		"tenant_id": user.TenantID,
+		"email":     user.Email,
 		"role":      user.Role,
 		"exp":       time.Now().Add(time.Hour * 24).Unix(),
 	})
 
 	tokenString, err := token.SignedString([]byte("your-secret-key"))
 	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "Could not generate token"})
+		return c.Status(500).JSON(fiber.Map{
+			"error": "Could not generate token",
+		})
 	}
 
 	return c.JSON(fiber.Map{
@@ -66,44 +92,93 @@ func (h *AuthHandler) Login(c *fiber.Ctx) error {
 	})
 }
 
-// Setup Toko handler
-func (h *AuthHandler) SetupStore(c *fiber.Ctx) error {
-	// Dapatkan tenant_id dari JWT (via middleware)
-	tenantID := c.Locals("tenant_id").(uint)
-
+// Register handler (untuk registrasi tenant baru)
+func (h *AuthHandler) Register(c *fiber.Ctx) error {
 	var input struct {
-		StoreName    string `json:"store_name"`
-		StorePhone   string `json:"store_phone"`
-		StoreEmail   string `json:"store_email"`
-		StoreAddress string `json:"store_address"`
-		ReceiptWidth string `json:"receipt_width"` // "58mm" atau "80mm"
+		StoreName  string `json:"store_name"`
+		StorePhone string `json:"store_phone"`
+		StoreEmail string `json:"store_email"`
+		AdminName  string `json:"admin_name"`
+		AdminEmail string `json:"admin_email"`
+		Password   string `json:"password"`
 	}
 
 	if err := c.BodyParser(&input); err != nil {
-		return c.Status(400).JSON(fiber.Map{"error": "Invalid input"})
+		return c.Status(400).JSON(fiber.Map{
+			"error": "Invalid input format",
+		})
 	}
 
-	var tenant models.Tenant
-	if err := h.DB.First(&tenant, tenantID).Error; err != nil {
-		return c.Status(404).JSON(fiber.Map{"error": "Tenant not found"})
+	// Validasi
+	if input.StoreName == "" || input.AdminEmail == "" || input.Password == "" {
+		return c.Status(400).JSON(fiber.Map{
+			"error": "Store name, admin email and password are required",
+		})
 	}
 
-	// Update tenant
-	tenant.StoreName = input.StoreName
-	tenant.StorePhone = input.StorePhone
-	tenant.StoreEmail = input.StoreEmail
-	tenant.StoreAddress = input.StoreAddress
-	tenant.ReceiptWidth = input.ReceiptWidth
+	// Start transaction
+	tx := h.DB.Begin()
 
-	// Handle logo upload (dari multipart form)
-	file, err := c.FormFile("logo")
-	if err == nil {
-		// Upload ke Cloudinary
-		// Implementasi upload ke Cloudinary
-		// tenant.LogoURL = uploadedURL
+	// Buat tenant baru
+	tenant := models.Tenant{
+		StoreName:  input.StoreName,
+		StorePhone: input.StorePhone,
+		StoreEmail: input.StoreEmail,
+		LogoURL:    "https://res.cloudinary.com/demo/image/upload/v1/default/logo.png", // Default logo
 	}
 
-	h.DB.Save(&tenant)
+	if err := tx.Create(&tenant).Error; err != nil {
+		tx.Rollback()
+		return c.Status(500).JSON(fiber.Map{
+			"error": "Failed to create tenant: " + err.Error(),
+		})
+	}
 
-	return c.JSON(tenant)
+	// Hash password
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
+	if err != nil {
+		tx.Rollback()
+		return c.Status(500).JSON(fiber.Map{
+			"error": "Failed to hash password",
+		})
+	}
+
+	// Buat admin user
+	user := models.User{
+		TenantID: tenant.ID,
+		Name:     input.AdminName,
+		Email:    input.AdminEmail,
+		Password: string(hashedPassword),
+		Role:     "admin",
+		IsActive: true,
+	}
+
+	if err := tx.Create(&user).Error; err != nil {
+		tx.Rollback()
+		return c.Status(500).JSON(fiber.Map{
+			"error": "Failed to create user: " + err.Error(),
+		})
+	}
+
+	// Buat default store settings
+	settings := models.StoreSetting{
+		TenantID:     tenant.ID,
+		PrinterWidth: "58mm",
+		TaxRate:      0,
+		Currency:     "IDR",
+	}
+
+	if err := tx.Create(&settings).Error; err != nil {
+		tx.Rollback()
+		return c.Status(500).JSON(fiber.Map{
+			"error": "Failed to create store settings",
+		})
+	}
+
+	tx.Commit()
+
+	return c.Status(201).JSON(fiber.Map{
+		"message":   "Tenant registered successfully",
+		"tenant_id": tenant.ID,
+	})
 }
