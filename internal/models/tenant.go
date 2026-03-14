@@ -14,6 +14,8 @@ type Tenant struct {
 	StoreAddress    string         `json:"store_address"`
 	LogoURL         string         `json:"logo_url" gorm:"not null"` // Wajib diisi
 	ReceiptTemplate string         `json:"receipt_template" gorm:"default:'default'"`
+	IsActive        bool           `json:"is_active" gorm:"default:false"`
+	LicenseKey      string         `json:"license_key" gorm:"uniqueIndex"`
 	ReceiptWidth    string         `json:"receipt_width" gorm:"default:'58mm'"` // 58mm atau 80mm
 	CreatedAt       time.Time      `json:"created_at"`
 	UpdatedAt       time.Time      `json:"updated_at"`

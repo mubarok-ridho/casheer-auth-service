@@ -12,6 +12,7 @@ import (
 	"github.com/mubarok-ridho/casheer-auth-service/internal/handlers"
 	"github.com/mubarok-ridho/casheer-auth-service/internal/middleware"
 	"github.com/mubarok-ridho/casheer-auth-service/internal/models"
+	"github.com/mubarok-ridho/casheer-auth-service/internal/repository"
 	"github.com/mubarok-ridho/casheer-auth-service/pkg/database"
 )
 
@@ -33,6 +34,7 @@ func main() {
 		&models.Tenant{},
 		&models.User{},
 		&models.StoreSetting{},
+		&models.LicenseKey{},
 	); err != nil {
 		log.Fatal("❌ Failed to migrate database:", err)
 	}
@@ -59,18 +61,25 @@ func main() {
 }
 
 func setupRoutes(app *fiber.App, db *gorm.DB) {
-	// Initialize handlers
 	authHandler := handlers.NewAuthHandler(db)
 	tenantHandler := handlers.NewTenantHandler(db)
+	licenseRepo := repository.NewLicenseRepository(db)
+	licenseHandler := handlers.NewLicenseHandler(licenseRepo)
 
 	// Public routes
 	app.Post("/api/v1/login", authHandler.Login)
 	app.Post("/api/v1/register", authHandler.Register)
 
-	// Protected routes
-	api := app.Group("/api/v1", middleware.AuthMiddleware())
+	// Admin routes
+	admin := app.Group("/api/v1/admin", middleware.AdminMiddleware())
+	admin.Post("/license/generate", licenseHandler.Generate)
+	admin.Get("/license", licenseHandler.List)
 
-	// Tenant routes
+	// License activate - auth tapi tidak cek license
+	app.Post("/api/v1/license/activate", middleware.AuthMiddleware(), licenseHandler.Activate)
+
+	// Protected routes - wajib license aktif
+	api := app.Group("/api/v1", middleware.AuthMiddleware(), middleware.LicenseMiddleware(db))
 	api.Get("/tenant/profile", tenantHandler.GetProfile)
 	api.Put("/tenant/setup", tenantHandler.SetupStore)
 	api.Post("/tenant/upload-logo", tenantHandler.UploadLogo)

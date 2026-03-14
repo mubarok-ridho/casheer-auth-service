@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -22,8 +23,9 @@ func NewAuthHandler(db *gorm.DB) *AuthHandler {
 // Login handler
 func (h *AuthHandler) Login(c *fiber.Ctx) error {
 	var input struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
+		Email      string `json:"email"`
+		Password   string `json:"password"`
+		LicenseKey string `json:"license_key"`
 	}
 
 	if err := c.BodyParser(&input); err != nil {
@@ -101,6 +103,7 @@ func (h *AuthHandler) Register(c *fiber.Ctx) error {
 		AdminName  string `json:"admin_name"`
 		AdminEmail string `json:"admin_email"`
 		Password   string `json:"password"`
+		LicenseKey string `json:"license_key"`
 	}
 
 	if err := c.BodyParser(&input); err != nil {
@@ -113,6 +116,18 @@ func (h *AuthHandler) Register(c *fiber.Ctx) error {
 	if input.StoreName == "" || input.AdminEmail == "" || input.Password == "" {
 		return c.Status(400).JSON(fiber.Map{
 			"error": "Store name, admin email and password are required",
+		})
+	}
+	// Validasi license key
+	if input.LicenseKey == "" {
+		return c.Status(400).JSON(fiber.Map{
+			"error": "License key diperlukan",
+		})
+	}
+	var license models.LicenseKey
+	if err := h.DB.Where("key = ? AND is_used = false", strings.ToUpper(strings.TrimSpace(input.LicenseKey))).First(&license).Error; err != nil {
+		return c.Status(400).JSON(fiber.Map{
+			"error": "License key tidak valid atau sudah digunakan",
 		})
 	}
 
@@ -176,6 +191,18 @@ func (h *AuthHandler) Register(c *fiber.Ctx) error {
 	}
 
 	tx.Commit()
+
+	// Aktivasi license
+	now := time.Now()
+	h.DB.Model(&license).Updates(map[string]interface{}{
+		"is_used": true,
+		"used_by": tenant.ID,
+		"used_at": now,
+	})
+	h.DB.Model(&tenant).Updates(map[string]interface{}{
+		"is_active":   true,
+		"license_key": strings.ToUpper(strings.TrimSpace(input.LicenseKey)),
+	})
 
 	return c.Status(201).JSON(fiber.Map{
 		"message":   "Tenant registered successfully",
