@@ -73,7 +73,7 @@ func (h *AuthHandler) Login(c *fiber.Ctx) error {
 		"exp":       time.Now().Add(time.Hour * 24).Unix(),
 	})
 
-	tokenString, err := token.SignedString([]byte("your-secret-key"))
+	tokenString, err := token.SignedString([]byte("your-super-secret-jwt-key-change-this-in-production"))
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{
 			"error": "Could not generate token",
